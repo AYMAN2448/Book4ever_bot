@@ -1,20 +1,15 @@
-# ================================
-# ملف: bot.py (النسخة النهائية المصححة)
-# ================================
 import asyncio
 import aiosqlite
 import requests
 import os
-from aiogram import Bot, Dispatcher, F, Router, types
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from flask import Flask, request
-import threading
 
-# ============ قراءة المتغيرات من البيئة (مع قيم افتراضية خاصة بك) ============
+# ============ قراءة المتغيرات من البيئة (مع قيم افتراضية) ============
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8840922039:AAEXrfY4b3KgU-dqNxAYuOc7-2Agkvenw-4")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8585868701"))
 
@@ -34,16 +29,7 @@ dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
-# ============ Flask server for webhook ============
-flask_app = Flask(__name__)
-
-@flask_app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
-async def webhook():
-    update = types.Update.model_validate(await request.get_json(), context={"bot": bot})
-    await dp.feed_update(bot, update)
-    return "OK", 200
-
-# ============ States ============
+# ============ تعريف الحالات (States) ============
 class BuyStates(StatesGroup):
     waiting_proof = State()
 
@@ -92,7 +78,7 @@ async def total_revenue():
         total = await cursor.fetchone()
         return total[0] if total[0] else 0.0
 
-# ============ Handlers ============
+# ============ الأوامر (نفس الكود السابق كاملاً) ============
 @router.message(CommandStart())
 async def start(message: Message):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -270,7 +256,6 @@ async def pay_binance(call: CallbackQuery):
     await call.message.edit_text(f"🟡 **Binance Pay**\n\nادفع من هنا:\n{BINANCE_PAY_LINK}\n\nبعد الدفع راسل الأدمن.")
 
 # ============ أوامر الأدمن ============
-# طريقة إضافة كتاب عبر إرسال ملف PDF مباشرة (الأمر /addbook)
 @router.message(Command("addbook"))
 async def addbook_instruction(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -318,7 +303,6 @@ async def add_book_from_pdf(message: Message):
         await db.commit()
     await message.answer(f"✅ تم إضافة الكتاب **{title}** للمؤلف **{author}** بسعر ${price}\n📁 المسار: `{file_path}`", parse_mode="Markdown")
 
-# طريقة إضافة كتاب يدوي (سطراً بسطر) للأدمن /addbook2
 @router.message(Command("addbook2"))
 async def addbook2(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
@@ -421,23 +405,11 @@ async def confirm_delbook(call: CallbackQuery):
         await db.commit()
     await call.message.edit_text("✅ تم حذف الكتاب.")
 
-# ============ تشغيل البوت (Webhook) ============
-async def on_startup():
+# ============ تشغيل البوت باستخدام Polling (بدون Flask) ============
+async def main():
     await init_db()
-    hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-    if hostname:
-        webhook_url = f"https://{hostname}/webhook/{BOT_TOKEN}"
-        await bot.set_webhook(webhook_url)
-        print(f"Webhook set to {webhook_url}")
-    else:
-        print("RENDER_EXTERNAL_HOSTNAME not set; skipping webhook setup (maybe local run)")
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    print("Bot started polling...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(on_startup())
-    threading.Thread(target=run_flask).start()
-    loop.run_forever()
+    asyncio.run(main())

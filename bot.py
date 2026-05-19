@@ -1,38 +1,30 @@
+# ================================
+# ملف: bot.py
+# ================================
 import asyncio
 import aiosqlite
 import requests
-from aiogram import Bot, Dispatcher, F, Router
+import os
+from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web
-import os
+from flask import Flask, request
+import threading
 
-# ============ الإعدادات ============
-BOT_TOKEN = "8840922039:AAEXrfY4b3KgU-dqNxAYuOc7-2Agkvenw-4"
-ADMIN_ID = 8585868701
-KEEP_ALIVE_URL = os.getenv("KEEP_ALIVE_URL", "") # حط رابط Render هنا في الـ Environment Variables
+# ============ قراءة المتغيرات من البيئة ============
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-# 1. التحويل البنكي - Kashy
-BANK_INFO = """
-🏦 **التحويل عبر كاشي**
-الاسم: لبني احمد سعيد
-رقم الحساب: 401951393
-"""
-
-# 2. TRX
-TRX_ADDRESS = "TArc3MovymaBrNmR4e4iRidLFx15BbDQ5L"
-TRX_RATE_USD = 0.15
-
-# 3. USDT TRC-20
-USDT_ADDRESS = "0x1b90069d9503e1931d30a8884080cdf16bd0cded"
-TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY", ":be37dba7-d9a7-4020-a8dc-389c143df032")
-USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-
-# 4. Binance Pay
-BINANCE_PAY_LINK = os.getenv("BINANCE_PAY_LINK","https://s.binance.com/UmsqRNki")
+BANK_INFO = os.getenv("BANK_INFO")
+TRX_ADDRESS = os.getenv("TRX_ADDRESS")
+USDT_ADDRESS = os.getenv("USDT_ADDRESS")
+TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY")
+USDT_CONTRACT = os.getenv("USDT_CONTRACT", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
+BINANCE_PAY_LINK = os.getenv("BINANCE_PAY_LINK")
+TRX_RATE_USD = float(os.getenv("TRX_RATE_USD", "0.15"))
 
 DB_PATH = "books.db"
 
@@ -42,15 +34,31 @@ dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
+# ============ Flask server for webhook ============
+flask_app = Flask(__name__)
+
+@flask_app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+async def webhook():
+    update = types.Update.model_validate(await request.get_json(), context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return "OK", 200
+
+# ============ States ============
 class BuyStates(StatesGroup):
     waiting_proof = State()
+
+class BroadcastStates(StatesGroup):
+    waiting_message = State()
+
+class AddBookState(StatesGroup):
+    waiting_details = State()
 
 # ============ قاعدة البيانات ============
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
         CREATE TABLE IF NOT EXISTS books (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT,
             author TEXT,
             price_usd REAL,
@@ -68,51 +76,40 @@ async def init_db():
         )""")
         await db.commit()
 
-# ============ Keep Alive ============
-async def keep_alive():
-    while True:
-        await asyncio.sleep(100)
-        if KEEP_ALIVE_URL:
-            try:
-                requests.get(KEEP_ALIVE_URL, timeout=10)
-                print("Keep-alive ping sent")
-            except Exception as e:
-                print("Keep-alive error:", e)
+async def get_book_by_id(book_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        return await db.execute_fetchone("SELECT title, author, price_usd, file_path FROM books WHERE id=?", (book_id,))
 
-async def handle(request):
-    return web.Response(text="OK")
+async def count_sold_books():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM orders WHERE status='paid'")
+        count = await cursor.fetchone()
+        return count[0] if count else 0
 
-async def run_web():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
-    await site.start()
+async def total_revenue():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT SUM(price_usd) FROM books WHERE id IN (SELECT book_id FROM orders WHERE status='paid')")
+        total = await cursor.fetchone()
+        return total[0] if total[0] else 0.0
 
-# ============ القائمة الرئيسية ============
+# ============ Handlers ============
 @router.message(CommandStart())
 async def start(message: Message):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT id, title, author, price_usd FROM books")
-        books = await cursor.fetchall()
-
+        books = await db.execute_fetchall("SELECT id, title, author, price_usd FROM books")
     if not books:
-        await message.answer("لا يوجد كتب حالياً")
+        await message.answer("📚 لا يوجد كتب حالياً.")
         return
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{b[1]} - {b[2]} | ${b[3]}", callback_data=f"book_{b[0]}")]
         for b in books
     ])
     await message.answer("📚 أهلاً بك في **book 4ever**\nاختر الكتاب:", parse_mode="Markdown", reply_markup=kb)
 
-# ============ اختيار طريقة الدفع ============
 @router.callback_query(F.data.startswith("book_"))
 async def choose_payment(call: CallbackQuery, state: FSMContext):
     book_id = int(call.data.split("_")[1])
     await state.update_data(book_id=book_id)
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏦 تحويل بنكي - كاشي", callback_data="pay_bank")],
         [InlineKeyboardButton(text="🪙 TRX", callback_data="pay_trx")],
@@ -121,35 +118,28 @@ async def choose_payment(call: CallbackQuery, state: FSMContext):
     ])
     await call.message.edit_text("اختر طريقة الدفع:", reply_markup=kb)
 
-# ============ 1. التحويل البنكي - يدوي ============
 @router.callback_query(F.data == "pay_bank")
 async def pay_bank(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text(
-        BANK_INFO + "\nبعد التحويل أرسل صورة إيصال الدفع هنا.",
-        parse_mode="Markdown"
-    )
+    await call.message.edit_text(BANK_INFO + "\n\n📎 بعد التحويل أرسل صورة إيصال الدفع هنا.", parse_mode="Markdown")
     await state.set_state(BuyStates.waiting_proof)
 
 @router.message(BuyStates.waiting_proof, F.photo)
 async def receive_proof(message: Message, state: FSMContext):
     data = await state.get_data()
     book_id = data['book_id']
-
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO orders (user_id, book_id, method, proof_msg_id) VALUES (?,?, 'bank',?)",
+            "INSERT INTO orders (user_id, book_id, method, proof_msg_id, status) VALUES (?,?, 'bank',?, 'pending')",
             (message.from_user.id, book_id, message.message_id)
         )
         order_id = cursor.lastrowid
         await db.commit()
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ موافقة", callback_data=f"approve_{order_id}")],
         [InlineKeyboardButton(text="❌ رفض", callback_data=f"reject_{order_id}")]
     ])
     await bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
-    await bot.send_message(ADMIN_ID, f"طلب جديد # {order_id}\nالمستخدم: @{message.from_user.username}", reply_markup=kb)
-
+    await bot.send_message(ADMIN_ID, f"📦 طلب جديد #{order_id}\n👤 @{message.from_user.username}\n📖 كتاب ID: {book_id}", reply_markup=kb)
     await message.answer("✅ تم استلام الإيصال. سيتم التحقق خلال 24 ساعة.")
     await state.clear()
 
@@ -157,58 +147,42 @@ async def receive_proof(message: Message, state: FSMContext):
 async def approve_order(call: CallbackQuery):
     order_id = int(call.data.split("_")[1])
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT user_id, book_id FROM orders WHERE id=? AND status='pending'", (order_id,))
-        order = await cursor.fetchone()
+        order = await db.execute_fetchone("SELECT user_id, book_id FROM orders WHERE id=? AND status='pending'", (order_id,))
         if not order:
-            await call.answer("الطلب غير موجود")
+            await call.answer("الطلب غير موجود أو تم معالجته")
             return
         await db.execute("UPDATE orders SET status='paid' WHERE id=?", (order_id,))
         await db.commit()
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT file_path, title FROM books WHERE id=?", (order[1],))
-        book = await cursor.fetchone()
-
-    if not book or not book[0]:
-        await call.message.edit_text("خطأ: ملف الكتاب غير موجود")
+    book = await get_book_by_id(order[1])
+    if not book or not os.path.exists(book[3]):
+        await bot.send_message(order[0], "⚠️ عذراً، ملف الكتاب غير موجود. تواصل مع الأدمن.")
+        await call.message.edit_text("⚠️ فشل الإرسال: الملف غير موجود.")
         return
-
-    try:
-        await bot.send_document(order[0], FSInputFile(book[0]), caption=f"✅ تم تأكيد الدفع!\nكتابك: {book[1]}")
-        await call.message.edit_text("تمت الموافقة وإرسال الكتاب.")
-    except Exception as e:
-        await call.message.edit_text(f"خطأ في إرسال الملف: {e}")
+    await bot.send_document(order[0], FSInputFile(book[3]), caption=f"✅ تم تأكيد الدفع!\n📖 {book[0]} - {book[1]}")
+    await call.message.edit_text("✅ تمت الموافقة وإرسال الكتاب.")
 
 @router.callback_query(F.data.startswith("reject_"))
 async def reject_order(call: CallbackQuery):
     order_id = int(call.data.split("_")[1])
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE orders SET status='rejected' WHERE id=?", (order_id,))
-        cursor = await db.execute("SELECT user_id FROM orders WHERE id=?", (order_id,))
-        order = await cursor.fetchone()
+        order = await db.execute_fetchone("SELECT user_id FROM orders WHERE id=?", (order_id,))
         await db.commit()
-    await bot.send_message(order[0], "❌ تم رفض إثبات الدفع. تواصل مع الأدمن.")
-    await call.message.edit_text("تم الرفض.")
+    if order:
+        await bot.send_message(order[0], "❌ تم رفض إثبات الدفع. تواصل مع الأدمن.")
+    await call.message.edit_text("❌ تم رفض الطلب.")
 
-# ============ 2. TRX ============
 @router.callback_query(F.data == "pay_trx")
 async def pay_trx(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     book_id = data['book_id']
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT price_usd, title FROM books WHERE id=?", (book_id,))
-        book = await cursor.fetchone()
-
-    amount_trx = round(book[0] / TRX_RATE_USD, 2)
-
+    book = await get_book_by_id(book_id)
+    if not book:
+        await call.answer("الكتاب غير موجود")
+        return
+    amount_trx = round(book[2] / TRX_RATE_USD, 2)
     await call.message.edit_text(
-        f"🪙 **الدفع بـ TRX**\n\n"
-        f"أرسل **{amount_trx} TRX** إلى:\n`{TRX_ADDRESS}`\n\n"
-        f"المبلغ يعادل ${book[0]}\n"
-        f"مهم: اكتب `{call.from_user.id}` في خانة Memo/Note\n"
-        f"بعد الإرسال اضغط 'تحققت'.\n"
-        f"⚠️ أرسل على شبكة **TRON** فقط",
+        f"🪙 **الدفع بـ TRX**\n\nأرسل **{amount_trx} TRX** إلى:\n`{TRX_ADDRESS}`\n\nالمبلغ يعادل ${book[2]}\n**هام:** اكتب `{call.from_user.id}` في خانة Memo.\nبعد الإرسال اضغط 'تحققت'.\n⚠️ شبكة TRON فقط.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔍 تحققت من الدفع", callback_data=f"check_trx_{book_id}")]
@@ -219,47 +193,41 @@ async def pay_trx(call: CallbackQuery, state: FSMContext):
 async def check_trx(call: CallbackQuery):
     book_id = int(call.data.split("_")[1])
     user_id = call.from_user.id
-
-    url = f"https://api.trongrid.io/v1/accounts/{TRX_ADDRESS}/transactions?limit=10&sort=-timestamp"
-    headers = {"TRON-PRO-API-KEY": TRONGRID_API_KEY}
-
+    url = f"https://api.trongrid.io/v1/accounts/{TRX_ADDRESS}/transactions?limit=15&sort=-timestamp"
+    headers = {"TRON-PRO-API-KEY": TRONGRID_API_KEY} if TRONGRID_API_KEY else {}
     try:
         res = requests.get(url, headers=headers, timeout=10).json()
         for tx in res.get('data', []):
             if tx.get('to') == TRX_ADDRESS.lower() and tx.get('contract_type') == 'TransferContract':
                 memo = tx.get('data', '')
                 if str(user_id) in memo:
+                    book = await get_book_by_id(book_id)
+                    if not book:
+                        await call.answer("خطأ")
+                        return
                     async with aiosqlite.connect(DB_PATH) as db:
-                        cursor = await db.execute("SELECT file_path, title FROM books WHERE id=?", (book_id,))
-                        book = await cursor.fetchone()
-                        await db.execute("INSERT INTO orders (user_id, book_id, method, status) VALUES (?,?, 'trx', 'paid')",
-                                         (user_id, book_id))
+                        await db.execute("INSERT INTO orders (user_id, book_id, method, status) VALUES (?,?, 'trx', 'paid')", (user_id, book_id))
                         await db.commit()
-                    await bot.send_document(user_id, FSInputFile(book[0]), caption=f"✅ تم الدفع بـ TRX!\nكتابك: {book[1]}")
-                    await call.message.edit_text("تم تأكيد الدفع وإرسال الكتاب.")
+                    if os.path.exists(book[3]):
+                        await bot.send_document(user_id, FSInputFile(book[3]), caption=f"✅ تم الدفع بـ TRX!\n📖 {book[0]}")
+                        await call.message.edit_text("✅ تم تأكيد الدفع وإرسال الكتاب.")
+                    else:
+                        await bot.send_message(user_id, "⚠️ تم الدفع لكن الملف غير موجود.")
                     return
     except Exception as e:
-        print("TRX Error:", e)
+        print("TRX error:", e)
+    await call.answer("لم يتم العثور على الدفع. تأكد من المبلغ والميمو.", show_alert=True)
 
-    await call.answer("لم يتم العثور على الدفع. تأكد من المبلغ والميمو وانتظر 1-2 دقيقة.")
-
-# ============ 3. USDT TRC-20 ============
 @router.callback_query(F.data == "pay_usdt")
 async def pay_usdt(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     book_id = data['book_id']
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT price_usd, title FROM books WHERE id=?", (book_id,))
-        book = await cursor.fetchone()
-
-    amount = book[0]
-
+    book = await get_book_by_id(book_id)
+    if not book:
+        await call.answer("الكتاب غير موجود")
+        return
     await call.message.edit_text(
-        f"💵 **الدفع بـ USDT على شبكة Tron TRC-20**\n\n"
-        f"أرسل **{amount} USDT** إلى:\n`{USDT_ADDRESS}`\n\n"
-        f"⚠️ استخدم شبكة **TRC-20** فقط. الحد الأدنى 5 USDT شغال.\n"
-        f"بعد الإرسال اضغط 'تحققت'.",
+        f"💵 **الدفع بـ USDT (TRC-20)**\n\nأرسل **${book[2]} USDT** إلى:\n`{USDT_ADDRESS}`\n\n⚠️ شبكة TRC-20 فقط.\nبعد الإرسال اضغط 'تحققت'.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔍 تحققت من الدفع", callback_data=f"check_usdt_{book_id}")]
@@ -270,128 +238,153 @@ async def pay_usdt(call: CallbackQuery, state: FSMContext):
 async def check_usdt(call: CallbackQuery):
     book_id = int(call.data.split("_")[1])
     user_id = call.from_user.id
-
-    headers = {"TRON-PRO-API-KEY": TRONGRID_API_KEY}
+    book = await get_book_by_id(book_id)
+    if not book:
+        await call.answer("خطأ")
+        return
+    headers = {"TRON-PRO-API-KEY": TRONGRID_API_KEY} if TRONGRID_API_KEY else {}
     url = f"https://api.trongrid.io/v1/accounts/{USDT_ADDRESS}/transactions/trc20?limit=20&contract_address={USDT_CONTRACT}"
-
     try:
         res = requests.get(url, headers=headers, timeout=15).json()
         for tx in res.get('data', []):
-            if tx.get('to') == USDT_ADDRESS.lower() and tx.get('token_info', {}).get('address') == USDT_CONTRACT:
+            if tx.get('to') == USDT_ADDRESS.lower():
                 value = int(tx['value']) / 1_000_000
-                if value >= book[0] and tx.get('transaction_info', {}).get('receipt', {}).get('result') == 'SUCCESS':
+                if value >= book[2]:
                     async with aiosqlite.connect(DB_PATH) as db:
-                        cursor = await db.execute("SELECT file_path, title FROM books WHERE id=?", (book_id,))
-                        book = await cursor.fetchone()
-                        await db.execute("INSERT INTO orders (user_id, book_id, method, status) VALUES (?,?, 'usdt', 'paid')",
-                                         (user_id, book_id))
-                        await db.commit()
-                    await bot.send_document(user_id, FSInputFile(book[0]), caption=f"✅ تم الدفع بـ USDT!\nكتابك: {book[1]}")
-                    await call.message.edit_text("تم تأكيد الدفع وإرسال الكتاب.")
+                        existing = await db.execute_fetchone("SELECT id FROM orders WHERE user_id=? AND book_id=? AND status='paid'", (user_id, book_id))
+                        if not existing:
+                            await db.execute("INSERT INTO orders (user_id, book_id, method, status) VALUES (?,?, 'usdt', 'paid')", (user_id, book_id))
+                            await db.commit()
+                    if os.path.exists(book[3]):
+                        await bot.send_document(user_id, FSInputFile(book[3]), caption=f"✅ تم الدفع بـ USDT!\n📖 {book[0]}")
+                        await call.message.edit_text("✅ تم تأكيد الدفع وإرسال الكتاب.")
+                    else:
+                        await bot.send_message(user_id, "⚠️ تم الدفع لكن الملف غير موجود.")
                     return
     except Exception as e:
-        print("USDT Error:", e)
+        print("USDT error:", e)
+    await call.answer("لم يتم العثور على الدفع.", show_alert=True)
 
-    await call.answer("لم يتم العثور على الدفع. تأكد إنك حولت على TRC-20 وانتظرت 1-2 دقيقة.")
-
-# ============ 4. Binance Pay ============
 @router.callback_query(F.data == "pay_binance")
 async def pay_binance(call: CallbackQuery):
-    await call.message.edit_text(
-        f"🟡 **Binance Pay**\n\n"
-        f"ادفع من هنا:\n{BINANCE_PAY_LINK}\n"
-        f"بعد الدفع راسل الأدمن لتأكيد الطلب يدوياً.",
-        parse_mode="Markdown"
-    )
+    await call.message.edit_text(f"🟡 **Binance Pay**\n\nادفع من هنا:\n{BINANCE_PAY_LINK}\n\nبعد الدفع راسل الأدمن.")
 
 # ============ أوامر الأدمن ============
-@router.message(Command("addbook"))
-async def add_book_cmd(message: Message):
-    if message.from_user.id!= ADMIN_ID:
-        return
-    await message.answer("أرسل ملف PDF مع الكابشن بهذه الصيغة:\n`العنوان | المؤلف | السعر`\nمثال:\n`الارض | نجيب محفوظ | 5`", parse_mode="Markdown")
+@router.message(Command("addbook2"))
+async def addbook2(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await message.answer("أرسل تفاصيل الكتاب:\nالعنوان\nالمؤلف\nالسعر\nالمسار (مثال: books/file.pdf)")
+    await state.set_state(AddBookState.waiting_details)
 
-@router.message(F.document.mime_type == "application/pdf")
-async def save_book_file(message: Message):
-    if message.from_user.id!= ADMIN_ID:
+@router.message(AddBookState.waiting_details)
+async def process_addbook(message: Message, state: FSMContext):
+    lines = message.text.strip().split("\n")
+    if len(lines) < 4:
+        await message.answer("أرسل 4 أسطر: العنوان، المؤلف، السعر، المسار")
         return
-    if not message.caption or "|" not in message.caption:
-        await message.answer("خطأ: اكتب الكابشن بصيغة `العنوان | المؤلف | السعر`")
-        return
-
+    title, author, price_str, path = lines[0].strip(), lines[1].strip(), lines[2].strip(), lines[3].strip()
     try:
-        title, author, price = [x.strip() for x in message.caption.split("|")]
-        file = await bot.get_file(message.document.file_id)
-        file_path = f"books/{message.document.file_name}"
-        os.makedirs("books", exist_ok=True)
-        await bot.download_file(file.file_path, file_path)
-
+        price = float(price_str)
+        if not os.path.exists(path):
+            await message.answer(f"⚠️ الملف غير موجود: {path}")
+            return
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("INSERT INTO books (title, author, price_usd, file_path) VALUES (?,?,?,?)",
-                             (title, author, float(price), file_path))
+            await db.execute("INSERT INTO books (title, author, price_usd, file_path) VALUES (?,?,?,?)", (title, author, price, path))
             await db.commit()
-        await message.answer(f"✅ تم إضافة الكتاب\nID: سيظهر في القائمة")
+        await message.answer(f"✅ تم إضافة الكتاب **{title}**")
     except Exception as e:
         await message.answer(f"خطأ: {e}")
+    await state.clear()
 
-@router.message(Command("getbook"))
-async def get_book(message: Message):
-    if message.from_user.id!= ADMIN_ID:
+@router.message(Command("stats"))
+async def stats(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("للمشرف فقط.")
         return
-    try:
-        book_id = int(message.text.split()[1])
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute("SELECT file_path, title FROM books WHERE id=?", (book_id,))
-            book = await cursor.fetchone()
-        if not book:
-            await message.answer("الكتاب غير موجود")
-            return
-        await bot.send_document(message.chat.id, FSInputFile(book[0]), caption=f"كتاب: {book[1]}")
-    except:
-        await message.answer("استخدم: /getbook [id]")
+    sold = await count_sold_books()
+    revenue = await total_revenue()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM orders WHERE status='pending'")
+        pending = (await cursor.fetchone())[0]
+    await message.answer(f"📊 **الإحصائيات**\n📚 مباع: {sold}\n💰 الأرباح: ${revenue}\n⏳ معلقة: {pending}", parse_mode="Markdown")
 
 @router.message(Command("broadcast"))
-async def broadcast(message: Message):
-    if message.from_user.id!= ADMIN_ID:
-        return
-    text = message.text.replace("/broadcast", "").strip()
-    if not text:
-        await message.answer("اكتب: /broadcast الرسالة")
-        return
+async def broadcast_cmd(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await message.answer("أرسل الرسالة (نص، صورة، ملف) ليتم نشرها لجميع المستخدمين.")
+    await state.set_state(BroadcastStates.waiting_message)
 
+@router.message(BroadcastStates.waiting_message, F.text | F.photo | F.document)
+async def send_broadcast(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT DISTINCT user_id FROM orders")
-        users = await cursor.fetchall()
-
-    count = 0
-    for user in users:
+        users = await db.execute_fetchall("SELECT DISTINCT user_id FROM orders")
+    if not users:
+        await message.answer("لا يوجد مستخدمون.")
+        await state.clear()
+        return
+    success = 0
+    for (user_id,) in users:
         try:
-            await bot.send_message(user[0], f"📢 إعلان:\n{text}")
-            count += 1
-            await asyncio.sleep(0.05)
+            if message.text:
+                await bot.send_message(user_id, message.text)
+            elif message.photo:
+                await bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption)
+            elif message.document:
+                await bot.send_document(user_id, message.document.file_id, caption=message.caption)
+            success += 1
         except:
             pass
-    await message.answer(f"تم الإرسال لـ {count} مستخدم")
+    await message.answer(f"📢 تم الإرسال إلى {success} مستخدم.")
+    await state.clear()
 
 @router.message(Command("panel"))
 async def admin_panel(message: Message):
-    if message.from_user.id!= ADMIN_ID:
-        return
+    if message.from_user.id != ADMIN_ID: return
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT id, user_id, book_id, method FROM orders WHERE status='pending'")
-        pending = await cursor.fetchall()
+        pending = await db.execute_fetchall("SELECT id, user_id, book_id, method FROM orders WHERE status='pending'")
     if not pending:
-        await message.answer("لا يوجد طلبات معلقة")
+        await message.answer("✅ لا توجد طلبات معلقة.")
         return
     text = "\n".join([f"طلب #{p[0]} | مستخدم {p[1]} | كتاب {p[2]} | {p[3]}" for p in pending])
-    await message.answer(f"الطلبات المعلقة:\n{text}")
+    await message.answer(f"**الطلبات المعلقة:**\n{text}", parse_mode="Markdown")
 
-async def main():
+@router.message(Command("delbook"))
+async def delbook(message: Message):
+    if message.from_user.id != ADMIN_ID: return
+    async with aiosqlite.connect(DB_PATH) as db:
+        books = await db.execute_fetchall("SELECT id, title FROM books")
+    if not books:
+        await message.answer("لا توجد كتب.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=b[1], callback_data=f"delbook_{b[0]}")] for b in books
+    ])
+    await message.answer("اختر الكتاب لحذفه:", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("delbook_"))
+async def confirm_delbook(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("غير مصرح")
+        return
+    book_id = int(call.data.split("_")[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM books WHERE id=?", (book_id,))
+        await db.commit()
+    await call.message.edit_text("✅ تم حذف الكتاب.")
+
+# ============ تشغيل البوت (Webhook) ============
+async def on_startup():
     await init_db()
-    print("Bot started...")
-    asyncio.create_task(run_web())
-    asyncio.create_task(keep_alive())
-    await dp.start_polling(bot)
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook/{BOT_TOKEN}"
+    await bot.set_webhook(webhook_url)
+    print(f"Webhook set to {webhook_url}")
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(on_startup())
+    threading.Thread(target=run_flask).start()
+    loop.run_forever()

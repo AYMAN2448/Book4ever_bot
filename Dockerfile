@@ -15,6 +15,6 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY bot.py .
-COPY books ./books
+RUN mkdir -p books
 
 CMD ["python", "bot.py"]

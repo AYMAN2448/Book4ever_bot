@@ -115,6 +115,31 @@ async def do_broadcast(message: Message, state: FSMContext):
     await message.answer(f"✅ تم إرسال الإشعار لـ {success} مشترك")
     await state.clear()
 
+# 👇 ضيف ده هنا
+@router.message(Command("addbook"))
+async def add_book(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("ما عندك صلاحية.")
+        return
+    
+    try:
+        _, data = message.text.split(" ", 1)
+        book_id, title, author, price, file_path = data.split("|")
+        
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO books VALUES (?,?,?,?,?)",
+                (int(book_id), title, author, float(price), file_path)
+            )
+            await db.commit()
+        
+        await message.answer(f"✅ تم إضافة الكتاب: {title}")
+        
+    except Exception as e:
+        await message.answer(f"خطأ: {e}")
+
+# ================== اختيار طريقة الدفع ==================
+@router.callback_query(F.data.startswith("pay_"))
 # ============ اختيار طريقة الدفع ============
 @router.callback_query(F.data.startswith("book_"))
 async def choose_payment(call: CallbackQuery, state: FSMContext):

@@ -1,8 +1,6 @@
-# ================================
-# ملف: requirements.txt
-# ================================
 aiogram==3.15.0
 aiosqlite
 requests
 Flask
 python-dotenv
+setuptools

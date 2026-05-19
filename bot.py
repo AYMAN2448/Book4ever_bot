@@ -132,7 +132,8 @@ async def receive_proof(message: Message, state: FSMContext):
 async def approve_order(call: CallbackQuery):
     order_id = int(call.data.split("_")[1])
     async with aiosqlite.connect(DB_PATH) as db:
-        order = await db.execute_fetchone("SELECT user_id, book_id FROM orders WHERE id=? AND status='pending'", (order_id,))
+        cursor = await db.execute("SELECT user_id, book_id FROM orders WHERE id=? AND status='pending'", (order_id,))
+order = await cursor.fetchone()
         if not order:
             await call.answer("الطلب غير موجود")
             return
@@ -140,7 +141,8 @@ async def approve_order(call: CallbackQuery):
         await db.commit()
 
     async with aiosqlite.connect(DB_PATH) as db:
-        book = await db.execute_fetchone("SELECT file_path, title FROM books WHERE id=?", (order[1],))
+       cursor = await db.execute("SELECT file_path FROM books WHERE id=?", (book_id,))
+book = await cursor.fetchone()
 
     await bot.send_document(order[0], FSInputFile(book[0]), caption=f"✅ تم تأكيد الدفع!\nكتابك: {book[1]}")
     await call.message.edit_text("تمت الموافقة وإرسال الكتاب.")
@@ -150,7 +152,8 @@ async def reject_order(call: CallbackQuery):
     order_id = int(call.data.split("_")[1])
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE orders SET status='rejected' WHERE id=?", (order_id,))
-        order = await db.execute_fetchone("SELECT user_id FROM orders WHERE id=?", (order_id,))
+        cursor = await db.execute("SELECT user_id FROM orders WHERE id=?", (order_id,))
+order = await cursor.fetchone()
         await db.commit()
     await bot.send_message(order[0], "❌ تم رفض إثبات الدفع. تواصل مع الأدمن.")
     await call.message.edit_text("تم الرفض.")
@@ -162,8 +165,9 @@ async def pay_trx(call: CallbackQuery, state: FSMContext):
     book_id = data['book_id']
 
     async with aiosqlite.connect(DB_PATH) as db:
-        book = await db.execute_fetchone("SELECT price_usd, title FROM books WHERE id=?", (book_id,))
-
+      cursor = await db.execute("SELECT price FROM books WHERE id=?", (book_id,))
+book = await cursor.fetchone()
+        
     amount_trx = round(book[0] / TRX_RATE_USD, 2)
 
     await call.message.edit_text(

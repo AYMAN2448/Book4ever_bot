@@ -1,5 +1,5 @@
 # ================================
-# ملف: bot.py
+# ملف: bot.py (النسخة النهائية المصححة)
 # ================================
 import asyncio
 import aiosqlite
@@ -14,16 +14,16 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from flask import Flask, request
 import threading
 
-# ============ قراءة المتغيرات من البيئة ============
-BOT_TOKEN = os.getenv("8840922039:AAEXrfY4b3KgU-dqNxAYuOc7-2Agkvenw-4")
-ADMIN_ID = int(os.getenv("8585868701"))
+# ============ قراءة المتغيرات من البيئة (مع قيم افتراضية خاصة بك) ============
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8840922039:AAEXrfY4b3KgU-dqNxAYuOc7-2Agkvenw-4")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8585868701"))
 
-BANK_INFO = os.getenv("401951393")
-TRX_ADDRESS = os.getenv("TArc3MovymaBrNmR4e4iRidLFx15BbDQ5L")
-USDT_ADDRESS = os.getenv("0x1b90069d9503e1931d30a8884080cdf16bd0cded")
-TRONGRID_API_KEY = os.getenv("be37dba7-d9a7-4020-a8dc-389c143df032")
+BANK_INFO = os.getenv("BANK_INFO", "🏦 التحويل عبر كاشي\nالاسم: لبني احمد سعيد\nرقم الحساب: 401951393")
+TRX_ADDRESS = os.getenv("TRX_ADDRESS", "TArc3MovymaBrNmR4e4iRidLFx15BbDQ5L")
+USDT_ADDRESS = os.getenv("USDT_ADDRESS", "0x1b90069d9503e1931d30a8884080cdf16bd0cded")
+TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY", "be37dba7-d9a7-4020-a8dc-389c143df032")
 USDT_CONTRACT = os.getenv("USDT_CONTRACT", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
-BINANCE_PAY_LINK = os.getenv("https://s.binance.com/UmsqRNki")
+BINANCE_PAY_LINK = os.getenv("BINANCE_PAY_LINK", "https://s.binance.com/UmsqRNki")
 TRX_RATE_USD = float(os.getenv("TRX_RATE_USD", "0.15"))
 
 DB_PATH = "books.db"
@@ -270,6 +270,55 @@ async def pay_binance(call: CallbackQuery):
     await call.message.edit_text(f"🟡 **Binance Pay**\n\nادفع من هنا:\n{BINANCE_PAY_LINK}\n\nبعد الدفع راسل الأدمن.")
 
 # ============ أوامر الأدمن ============
+# طريقة إضافة كتاب عبر إرسال ملف PDF مباشرة (الأمر /addbook)
+@router.message(Command("addbook"))
+async def addbook_instruction(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "📚 **إضافة كتاب جديد**\n\n"
+        "أرسل ملف PDF مع كابشن بهذا الشكل:\n"
+        "`العنوان | المؤلف | السعر`\n\n"
+        "مثال:\n"
+        "`الأرض | نجيب محفوظ | 5`\n\n"
+        "سيتم حفظ الملف تلقائياً وإضافة الكتاب.",
+        parse_mode="Markdown"
+    )
+
+@router.message(F.document)
+async def add_book_from_pdf(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not message.document.file_name.endswith('.pdf'):
+        await message.answer("⚠️ يرجى إرسال ملف PDF فقط.")
+        return
+    if not message.caption:
+        await message.answer("⚠️ يرجى إضافة كابشن بالصيغة: `العنوان | المؤلف | السعر`", parse_mode="Markdown")
+        return
+    parts = [p.strip() for p in message.caption.split("|")]
+    if len(parts) != 3:
+        await message.answer("⚠️ الصيغة غير صحيحة. استخدم: `العنوان | المؤلف | السعر`", parse_mode="Markdown")
+        return
+    title, author, price_str = parts
+    try:
+        price = float(price_str)
+    except:
+        await message.answer("⚠️ السعر يجب أن يكون رقماً (مثال: 5 أو 5.99)")
+        return
+    file_name = f"{title}_{author}.pdf".replace(" ", "_").replace("/", "_")
+    file_path = f"books/{file_name}"
+    os.makedirs("books", exist_ok=True)
+    file = await bot.get_file(message.document.file_id)
+    await bot.download_file(file.file_path, file_path)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO books (title, author, price_usd, file_path) VALUES (?,?,?,?)",
+            (title, author, price, file_path)
+        )
+        await db.commit()
+    await message.answer(f"✅ تم إضافة الكتاب **{title}** للمؤلف **{author}** بسعر ${price}\n📁 المسار: `{file_path}`", parse_mode="Markdown")
+
+# طريقة إضافة كتاب يدوي (سطراً بسطر) للأدمن /addbook2
 @router.message(Command("addbook2"))
 async def addbook2(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
@@ -375,9 +424,13 @@ async def confirm_delbook(call: CallbackQuery):
 # ============ تشغيل البوت (Webhook) ============
 async def on_startup():
     await init_db()
-    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook/{BOT_TOKEN}"
-    await bot.set_webhook(webhook_url)
-    print(f"Webhook set to {webhook_url}")
+    hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+    if hostname:
+        webhook_url = f"https://{hostname}/webhook/{BOT_TOKEN}"
+        await bot.set_webhook(webhook_url)
+        print(f"Webhook set to {webhook_url}")
+    else:
+        print("RENDER_EXTERNAL_HOSTNAME not set; skipping webhook setup (maybe local run)")
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))

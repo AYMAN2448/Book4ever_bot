@@ -17,4 +17,4 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 COPY bot.py .
 COPY books ./books
 
-CMD ["python", "bot.py"]CMD ["python", "bot.py"]
+CMD ["python", "bot.py"]

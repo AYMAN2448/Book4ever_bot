@@ -15,15 +15,15 @@ from flask import Flask, request
 import threading
 
 # ============ قراءة المتغيرات من البيئة ============
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+BOT_TOKEN = os.getenv("8840922039:AAEXrfY4b3KgU-dqNxAYuOc7-2Agkvenw-4")
+ADMIN_ID = int(os.getenv("8585868701"))
 
-BANK_INFO = os.getenv("BANK_INFO")
-TRX_ADDRESS = os.getenv("TRX_ADDRESS")
-USDT_ADDRESS = os.getenv("USDT_ADDRESS")
-TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY")
+BANK_INFO = os.getenv("401951393")
+TRX_ADDRESS = os.getenv("TArc3MovymaBrNmR4e4iRidLFx15BbDQ5L")
+USDT_ADDRESS = os.getenv("0x1b90069d9503e1931d30a8884080cdf16bd0cded")
+TRONGRID_API_KEY = os.getenv("be37dba7-d9a7-4020-a8dc-389c143df032")
 USDT_CONTRACT = os.getenv("USDT_CONTRACT", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
-BINANCE_PAY_LINK = os.getenv("BINANCE_PAY_LINK")
+BINANCE_PAY_LINK = os.getenv("https://s.binance.com/UmsqRNki")
 TRX_RATE_USD = float(os.getenv("TRX_RATE_USD", "0.15"))
 
 DB_PATH = "books.db"
